@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, ReactNode, useReducer, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import { isAllowed, setAllowed, requestAccess, getAddress, getNetworkDetails } from '@stellar/freighter-api';
 import { fetchUsdcBalance } from '../utils/horizon';
 import { logger } from '../utils/logger';
@@ -84,6 +84,8 @@ interface WalletContextType extends WalletState {
 const WalletContext = createContext<WalletContextType | undefined>(undefined);
 
 export const BALANCE_REFRESH_INTERVAL = 30_000;
+export const ACCOUNT_POLL_INTERVAL = 2_000; // Check account explicitly every 2s
+
 export const WALLET_DISCONNECTED_KEY = 'disciplr:wallet:userDisconnected';
 
 export function WalletProvider({ children }: { children: ReactNode }) {
@@ -91,13 +93,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const abortControllerRef = useRef<AbortController | null>(null);
     const lastKnownAddressRef = useRef<string | null>(null);
     const lastKnownNetworkRef = useRef<WalletNetwork | null>(null);
-    const operationSeqRef = useRef(0);
+    const checkConnectionInProgress = useRef(false);
 
     const normalizeNetwork = (networkName: string): WalletNetwork => {
         return networkName === 'PUBLIC' ? 'PUBLIC' : 'TESTNET';
     };
 
-    const fetchNetworkAndBalance = useCallback(async (pubKey: string, seq: number) => {
+    const fetchNetworkAndBalance = useCallback(async (pubKey: string) => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
         }
@@ -134,30 +136,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const checkConnection = useCallback(async () => {
-        if (localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') return;
-        
-        const seq = ++operationSeqRef.current;
-        dispatch({ type: 'RESTORE_START' });
-        
+        if (checkConnectionInProgress.current) return;
+        checkConnectionInProgress.current = true;
         try {
-            const allowed = await isAllowed();
-            if (seq !== operationSeqRef.current) return;
-            
-            if (allowed && allowed.isAllowed) {
+            if (localStorage.getItem(WALLET_DISCONNECTED_KEY) === 'true') {
+                return;
+            }
+            if ((await isAllowed()).isAllowed) {
                 const { address: pubKey, error: addrError } = await getAddress();
                 if (seq !== operationSeqRef.current) return;
                 
                 if (pubKey && !addrError) {
-                    lastKnownAddressRef.current = pubKey;
-                    const netDetails = await getNetworkDetails();
-                    if (seq !== operationSeqRef.current) return;
-                    const activeNetwork = normalizeNetwork(netDetails.network);
-                    lastKnownNetworkRef.current = activeNetwork;
+                    setAddress(pubKey);
                     
-                    dispatch({ type: 'CONNECT_SUCCESS', payload: { address: pubKey, network: activeNetwork } });
-                    await fetchNetworkAndBalance(pubKey, seq);
-                } else {
-                    dispatch({ type: 'RESTORE_ABORT' });
+                    // Skip redundant fetch if address hasn't changed
+                    if (pubKey !== lastKnownAddressRef.current) {
+                        lastKnownAddressRef.current = pubKey;
+                        await fetchNetworkAndBalance(pubKey);
+                    }
                 }
             } else {
                 dispatch({ type: 'RESTORE_ABORT' });
@@ -165,7 +161,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         } catch (err) {
             if (seq !== operationSeqRef.current) return;
             logger.error('Check connection error', err);
-            dispatch({ type: 'RESTORE_ABORT' });
+        } finally {
+            checkConnectionInProgress.current = false;
         }
     }, [fetchNetworkAndBalance]);
 
@@ -179,9 +176,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         };
     }, [checkConnection]);
 
+    // Fast polling for account changes & standard polling for balance
     useEffect(() => {
         if (!state.address) return;
 
+        let lastBalanceCheck = Date.now();
+        
         const tick = async () => {
             if (document.hidden) return;
             const seq = ++operationSeqRef.current;
@@ -190,24 +190,31 @@ export function WalletProvider({ children }: { children: ReactNode }) {
                 if (seq !== operationSeqRef.current) return;
                 
                 if (currentAddr && !addrError && currentAddr !== lastKnownAddressRef.current) {
+                    // Account changed! Update state and fetch immediately
+                    setAddress(currentAddr);
                     lastKnownAddressRef.current = currentAddr;
-                    dispatch({ type: 'UPDATE_ADDRESS', payload: { address: currentAddr } });
-                    await fetchNetworkAndBalance(currentAddr, seq);
-                } else {
-                    await fetchNetworkAndBalance(lastKnownAddressRef.current ?? state.address!, seq);
+                    lastBalanceCheck = Date.now();
+                    await fetchNetworkAndBalance(currentAddr);
+                } else if (Date.now() - lastBalanceCheck >= BALANCE_REFRESH_INTERVAL) {
+                    // Refresh balance on the existing account
+                    lastBalanceCheck = Date.now();
+                    await fetchNetworkAndBalance(currentAddr || address);
                 }
             } catch {
-                if (seq !== operationSeqRef.current) return;
-                await fetchNetworkAndBalance(state.address!, seq);
+                // If it fails, fallback
+                if (Date.now() - lastBalanceCheck >= BALANCE_REFRESH_INTERVAL) {
+                    lastBalanceCheck = Date.now();
+                    await fetchNetworkAndBalance(address);
+                }
             }
         };
 
-        const id = setInterval(tick, BALANCE_REFRESH_INTERVAL);
+        const id = setInterval(tick, ACCOUNT_POLL_INTERVAL);
 
         const onVisibilityChange = () => {
-            if (!document.hidden && state.address) {
-                const seq = ++operationSeqRef.current;
-                fetchNetworkAndBalance(state.address, seq);
+            if (!document.hidden && address) {
+                lastBalanceCheck = Date.now();
+                fetchNetworkAndBalance(address);
             }
         };
         document.addEventListener('visibilitychange', onVisibilityChange);
@@ -216,7 +223,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             clearInterval(id);
             document.removeEventListener('visibilitychange', onVisibilityChange);
         };
-    }, [state.address, fetchNetworkAndBalance]);
+    }, [address, fetchNetworkAndBalance]);
 
     const connect = async (): Promise<boolean> => {
         const seq = ++operationSeqRef.current;
