@@ -1,16 +1,29 @@
 import { useState, useRef, useEffect } from 'react';
 import { useWallet } from '../../context/WalletContext';
-import { Wallet } from 'lucide-react';
+import { Wallet, Loader2, AlertCircle } from 'lucide-react';
 import './wallet.css';
 import { WalletDropdown } from './WalletDropdown';
 import { networkLabel } from '../../utils/explorer';
 import { WalletSelectionModal } from './WalletSelectionModal';
+import { logger } from '../../utils/logger';
 
 export function WalletConnectButton() {
-    const { address, network } = useWallet();
+    const { address, network, isConnecting, error } = useWallet();
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
+
+    // Telemetry: Expose structured diagnostics for failures
+    useEffect(() => {
+        if (error) {
+            logger.error('Wallet connection error encountered in UI state', {
+                timestamp: new Date().toISOString(),
+                hasAddress: !!address,
+                network,
+                error
+            });
+        }
+    }, [error, address, network]);
 
     // Close dropdown when clicking outside
     useEffect(() => {
@@ -26,6 +39,33 @@ export function WalletConnectButton() {
     const truncateAddress = (addr: string) => {
         return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
     };
+
+    if (error && !address) {
+        return (
+            <div className="wallet-dropdown-container">
+                <button
+                    className="wallet-connect-btn error"
+                    onClick={() => setIsModalOpen(true)}
+                    title={error}
+                >
+                    <AlertCircle size={16} />
+                    <span>Connection Failed</span>
+                </button>
+                {isModalOpen && (
+                    <WalletSelectionModal onClose={() => setIsModalOpen(false)} />
+                )}
+            </div>
+        );
+    }
+
+    if (isConnecting && !address) {
+        return (
+            <button className="wallet-connect-btn connecting" disabled>
+                <Loader2 size={16} className="animate-spin" />
+                <span>Connecting...</span>
+            </button>
+        );
+    }
 
     return (
         <>
