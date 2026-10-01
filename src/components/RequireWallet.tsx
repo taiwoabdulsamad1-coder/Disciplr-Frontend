@@ -48,7 +48,7 @@ export default function RequireWallet({ children }: RequireWalletProps) {
     navigate(destinationRef.current, { replace: true });
   }, [normalizedAddress, navigate]);
 
-  if (normalizedAddress) return <>{children}</;
+  if (normalizedAddress) return <>{children}</>;
 
   return (
     <div
