@@ -10,10 +10,10 @@ const createVault = (overrides: Partial<Vault> = {}): Vault => ({
   currency: 'USDC',
   createdAt: '2024-01-01T00:00:00Z',
   deadline: '2024-12-31T00:00:00Z',
-  creatorAddress: 'GBVZ3KQKM4XNQPBEZMXPOLKQKM4XNQPBEZMXPOLKQK7L',
-  successAddress: 'GSUCC3KQKM4XNQPBEZMXPOLKQKM4XNQPBEZMXPOLKQK',
-  failureAddress: 'GFAIL3KQKM4XNQPBEZMXPOLKQKM4XNQPBEZMXPOLKQK',
-  contractAddress: 'GCONT3KQKM4XNQPBEZMXPOLKQKM4XNQPBEZMXPOLKQK',
+  creatorAddress: 'GBVZ3KQKM4XNQPBEZMXPOLKQK4XNQPBEZMXPOLKQKK7L',
+  successAddress: 'GSUCC3KQKM4XNQPBEZMXPOLKQKK4XNQPBEZMXPOLKQK',
+  failureAddress: 'GFAIL3KQKM4XNQPBEZMXPOLKQK4XNQPBEZMXPOLKQKK',
+  contractAddress: 'GCONT3KQKM4XNQPBEZMXPOLKQK4XNQPBEZMXPOLKQKK',
   milestones: [],
   transactions: [],
   ...overrides,
@@ -329,7 +329,8 @@ describe('sortVaults', () => {
       const input = [...mockVaults];
       const original = JSON.stringify(input);
       sortVaults(input, { by: 'deadline', dir: 'asc' });
-      expect(JSON.stringify(input)).toBe(original);
+      expect(JSON.stringify(input)).toBe(
+original);
     });
 
     it('returns sorted array (not a reference to original)', () => {

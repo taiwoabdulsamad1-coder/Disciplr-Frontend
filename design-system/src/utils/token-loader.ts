@@ -5,7 +5,6 @@
 import { DesignTokens } from '../types/tokens';
 import * as fs from 'fs';
 import * as path from 'path';
-import { logger } from './logger';
 
 export function loadTokens(tokenFile: string): DesignTokens {
   // Reject anything that isn't a plain basename with a .json extension
@@ -28,16 +27,17 @@ export function loadTokens(tokenFile: string): DesignTokens {
 export function getAllTokens(): DesignTokens {
   const tokenFiles = ['colors.json', 'typography.json', 'spacing.json', 'shadows.json', 'motion.json', 'borders.json', 'z-index.json', 'opacity.json', 'breakpoints.json', 'toast.json'];
   const allTokens: DesignTokens = {};
-  
+
   tokenFiles.forEach(file => {
     try {
       const tokens = loadTokens(file);
       Object.assign(allTokens, tokens);
     } catch (error) {
-      logger.warn(`Failed to load ${file}:`, error);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to load required token file "${file}": ${message}`);
     }
   });
-  
+
   return allTokens;
 }
 

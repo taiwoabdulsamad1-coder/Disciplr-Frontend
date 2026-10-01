@@ -3,7 +3,7 @@
  */
 
 export function isValidHexColor(color: string): boolean {
-  return /^#(?:[0-9A-F]{3}|[0-9A-F]{4}|[0-9A-F]{6}|[0-9A-F]{8})$/i.test(color);
+  return /^#(?:[0-9A-F]{3}|[0-9A-F]{4}|[0-9A-F]{6}|[0-9A-F]{1})$/i.test(color);
 }
 
 export function isValidRgbColor(color: string): boolean {

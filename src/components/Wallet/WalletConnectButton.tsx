@@ -37,6 +37,7 @@ export function WalletConnectButton() {
     }, []);
 
     const truncateAddress = (addr: string) => {
+        if (!addr || addr.length <= 8) return addr;
         return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
     };
 

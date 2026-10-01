@@ -86,7 +86,8 @@ export default function NotificationSettings() {
               name="notification-frequency"
               id="notification-frequency"
             >
-              <option value="1">Occurance</option>
+              <option value="" disabled hidden>Not set</option>
+              <option value="1">Occurrence</option>
               <option value="2">Daily</option>
               <option value="3">Weekly</option>
               <option value="4">Never</option>

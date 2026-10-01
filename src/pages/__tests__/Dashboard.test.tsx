@@ -1,7 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { useState } from "react";
 import Dashboard from "../Dashboard";
+import VaultCard from "../../components/VaultCard";
 import { MASTER_VAULTS } from "../../fixtures/vaults";
 import { computeDashboardSummary } from "../../utils/dashboard";
 import { listVaults } from "../../services/vaultService";
@@ -165,5 +167,54 @@ describe("Dashboard page", () => {
     });
     // MASTER_VAULTS fixture deadlines are all outside the "soon" window.
     expect(screen.queryByText(/⚠️ At Risk/)).not.toBeInTheDocument();
+  });
+
+  test("memoized VaultCard does not re-render when an ancestor re-renders", async () => {
+    const spy = vi.spyOn(VaultCard, "type");
+
+    const safeDeadline = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    // Names deliberately avoid the dashboard fixtures (ACTIVITY/DEADLINES
+    // already contain a vault called "Alpha Vault").
+    mockedListVaults.mockResolvedValueOnce([
+      buildVault({ id: "1", name: "Memo Vault One", deadline: safeDeadline }),
+      buildVault({ id: "2", name: "Memo Vault Two", deadline: safeDeadline }),
+    ]);
+
+    function Ancestor() {
+      const [count, setCount] = useState(0);
+      return (
+        <div>
+          <button onClick={() => setCount((c) => c + 1)}>
+            Re-render ancestor ({count})
+          </button>
+          <Dashboard />
+        </div>
+      );
+    }
+
+    render(
+      <MemoryRouter>
+        <Ancestor />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Memo Vault One progress"),
+      ).toBeInTheDocument(),
+    );
+
+    const rendersAfterMount = spy.mock.calls.length;
+    expect(rendersAfterMount).toBe(2);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Re-render ancestor/i }),
+    );
+
+    // The ancestor's state change re-renders Dashboard, but each VaultCard
+    // receives identical props and must not re-render.
+    expect(spy.mock.calls.length).toBe(rendersAfterMount);
+
+    spy.mockRestore();
   });
 });

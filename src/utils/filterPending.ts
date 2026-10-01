@@ -1,3 +1,12 @@
+/**
+ * Filters pending validation tasks by search query and milestone.
+ *
+ * @param tasks - Array of pending validation tasks
+ * @param options - Options for filtering
+ * @param options.query - Search query to match against vaultName and owner (case-insensitive)
+ * @param options.milestone - Milestone to filter by; undefined or empty string returns all milestones
+ * @returns Filtered array of tasks
+ */
 import type { ValidationTask } from '../Zustand/Store';
 
 export interface FilterOptions {
@@ -7,15 +16,6 @@ export interface FilterOptions {
 
 export type PendingTask = ValidationTask;
 
-/**
- * Filters pending validation tasks by search query and milestone.
- * 
- * @param tasks - Array of pending validation tasks
- * @param options - Options for filtering
- * @param options.query - Search query to match against vaultName and owner (case-insensitive)
- * @param options.milestone - Milestone to filter by; undefined or empty string returns all milestones
- * @returns Filtered array of tasks
- */
 export function filterPending(
   tasks: PendingTask[],
   options: FilterOptions = {},

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, MemoryRouter, useInRouterContext } from "react-router-dom";
 import { StatusChip } from "../components/StatusChip";
 import { Text } from "../components/Text";
@@ -23,6 +23,43 @@ function getViewPreference(): "list" | "grid" {
   return DEFAULT_VIEW;
 }
 
+const VALID_SORT_BY: ReadonlyArray<VaultSortOptions["by"]> = [
+  "deadline",
+  "amount",
+];
+const VALID_SORT_DIR: ReadonlyArray<VaultSortOptions["dir"]> = ["asc", "desc"];
+
+/**
+ * Invariant: only well-formed vaults are rendered. Malformed entries from the
+ * service layer (missing id/name, non-finite amount, invalid deadline, unknown
+ * status) are dropped rather than allowed to produce inconsistent UI state.
+ */
+function isValidVault(value: unknown): value is Vault {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== "string" || v.id.length === 0) return false;
+  if (typeof v.name !== "string" || v.name.length === 0) return false;
+  if (typeof v.amount !== "number" || !Number.isFinite(v.amount)) return false;
+  if (typeof v.currency !== "string" || v.currency.length === 0) return false;
+  if (typeof v.deadline !== "string") return false;
+  const deadlineMs = Date.parse(v.deadline);
+  if (Number.isNaN(deadlineMs)) return false;
+  if (typeof v.status !== "string" || v.status.length === 0) return false;
+  if (v.milestones !== undefined) {
+    if (!Array.isArray(v.milestones)) return false;
+    for (const m of v.milestones) {
+      if (!m || typeof m !== "object") return false;
+      if (typeof (m as { status?: unknown }).status !== "string") return false;
+    }
+  }
+  return true;
+}
+
+function sanitizeVaults(input: unknown): Vault[] {
+  if (!Array.isArray(input)) return [];
+  return input.filter(isValidVault);
+}
+
 function setViewPreference(view: "list" | "grid") {
   try {
     localStorage.setItem(STORAGE_KEY, view);
@@ -36,7 +73,11 @@ function calculateProgressPct(vault: Vault): number {
   const validated = vault.milestones.filter(
     (m) => m.status === "validated",
   ).length;
-  return Math.round((validated / vault.milestones.length) * 100);
+  const pct = Math.round((validated / vault.milestones.length) * 100);
+  // Clamp to [0, 100] so unexpected milestone shapes cannot render an
+  // out-of-range progress value.
+  if (!Number.isFinite(pct)) return 0;
+  return Math.max(0, Math.min(100, pct));
 }
 
 const DEFAULT_FETCH = () => listVaults();
@@ -73,6 +114,8 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
     by: "deadline",
     dir: "asc",
   });
+  // Monotonic request id: only the latest in-flight fetch may commit state.
+  const requestIdRef = useRef(0);
 
   // Use a ref so changing the fetchVaults prop identity doesn't re-trigger the effect
   const fetchRef = useRef(fetchVaults);
@@ -80,32 +123,53 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
 
   useEffect(() => {
     let cancelled = false;
+    const requestId = ++requestIdRef.current;
     setStatus("loading");
-    fetchRef
-      .current()
+    Promise.resolve()
+      .then(() => fetchRef.current())
       .then((data) => {
-        if (cancelled) return;
-        setVaults(data);
-        setStatus(data.length === 0 ? "empty" : "data");
+        // Ignore stale responses from superseded requests and unmounted trees.
+        if (cancelled || requestId !== requestIdRef.current) return;
+        const safe = sanitizeVaults(data);
+        setVaults(safe);
+        setStatus(safe.length === 0 ? "empty" : "data");
       })
       .catch(() => {
-        if (!cancelled) setStatus("error");
+        if (cancelled || requestId !== requestIdRef.current) return;
+        setStatus("error");
       });
     return () => {
       cancelled = true;
     };
   }, [retryCount]); // only re-run on explicit retry
 
-  const retry = useCallback(() => setRetryCount((c) => c + 1), []);
+  const retry = useCallback(() => {
+    // Clear stale data so a failed retry cannot leave the previous dataset
+    // visible alongside an error state.
+    setVaults([]);
+    setRetryCount((c) => c + 1);
+  }, []);
 
   const handleViewChange = useCallback((newView: "list" | "grid") => {
     setViewMode(newView);
     setViewPreference(newView);
   }, []);
 
+  // Normalize sort options against the allowed set so an out-of-range value
+  // (e.g. from a stale persisted preference) cannot reach the sort util.
+  const safeSortOptions = useMemo<VaultSortOptions>(() => {
+    const by = VALID_SORT_BY.includes(sortOptions.by)
+      ? sortOptions.by
+      : "deadline";
+    const dir = VALID_SORT_DIR.includes(sortOptions.dir)
+      ? sortOptions.dir
+      : "asc";
+    return { by, dir };
+  }, [sortOptions.by, sortOptions.dir]);
+
   // Apply filters and sorting
   const filteredVaults = filterVaults(vaults, filters);
-  const sortedVaults = sortVaults(filteredVaults, sortOptions);
+  const sortedVaults = sortVaults(filteredVaults, safeSortOptions);
 
   return (
     <div>
@@ -213,7 +277,7 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
         <select
           id="vault-sort-by"
           aria-label="Sort vaults by"
-          value={sortOptions.by}
+          value={safeSortOptions.by}
           onChange={(e) =>
             setSortOptions((prev) => ({
               ...prev,
@@ -235,7 +299,7 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
           <option value="amount">Amount</option>
         </select>
         <button
-          aria-label={`Sort ${sortOptions.dir === "asc" ? "descending" : "ascending"}`}
+          aria-label={`Sort ${safeSortOptions.dir === "asc" ? "descending" : "ascending"}`}
           onClick={() =>
             setSortOptions((prev) => ({
               ...prev,
@@ -253,7 +317,7 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
             minHeight: 44,
           }}
         >
-          {sortOptions.dir === "asc" ? "↑ Asc" : "↓ Desc"}
+          {safeSortOptions.dir === "asc" ? "↑ Asc" : "↓ Desc"}
         </button>
       </div>
 
@@ -279,7 +343,7 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
       {status === "error" && (
         <div style={{ textAlign: "center", padding: "3rem 1rem" }}>
           <Text role="body" as="p">
-            Failed to load vaults.
+            Failed to load vaults. Please try again.
           </Text>
           <button onClick={retry}>Retry</button>
         </div>
@@ -287,6 +351,13 @@ export function VaultsInner({ fetchVaults = DEFAULT_FETCH }: VaultsInnerProps) {
 
       {status === "data" && (
         <>
+          {sortedVaults.length === 0 && (
+            <div style={{ textAlign: "center", padding: "3rem 1rem" }}>
+              <Text role="body" as="p">
+                No vaults match your filters.
+              </Text>
+            </div>
+          )}
           {viewMode === "list" && (
             <div
               style={{

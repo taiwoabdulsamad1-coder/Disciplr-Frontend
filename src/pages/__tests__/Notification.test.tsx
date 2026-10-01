@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Ref, ReactNode } from "react";
@@ -139,6 +139,17 @@ describe("Notification page", () => {
       (n) => n.id === unreadNotification.id,
     );
     expect(updated!.isRead).toBe(true);
+  });
+
+  it("ignores a stale dismiss action without changing notifications", () => {
+    renderNotification();
+    const before = useNotification.getState().notification;
+
+    act(() => {
+      useNotification.getState().dismiss("notification-that-no-longer-exists");
+    });
+
+    expect(useNotification.getState().notification).toEqual(before);
   });
 
   it("resets to page 1 when filter changes", () => {
@@ -414,5 +425,47 @@ describe("Notification page", () => {
         screen.getByRole("heading", { name: "Notification Settings" }),
       ).toBeInTheDocument();
     });
+  });
+});
+
+describe("Notification page with a large inbox", () => {
+  // More than FULL_PAGE_LIST_LIMIT * itemsPerPage, so the windowed pagination
+  // (and with it the jump control) is actually engaged.
+  const bulkNotifications = Array.from({ length: 45 }, (_, index) => ({
+    ...initialNotifications[0],
+    id: `ntf_bulk_${index}`,
+  }));
+
+  beforeEach(() => {
+    useNotification.setState({ notification: bulkNotifications });
+  });
+
+  it("keeps the numbered controls bounded and offers a jump control", () => {
+    renderNotification();
+
+    expect(screen.getByText("Page 1 of 9")).toBeInTheDocument();
+
+    const pageButtons = screen
+      .getAllByRole("button")
+      .filter((button) => /^Go to page \d+$/.test(button.getAttribute("aria-label") ?? ""));
+    // The documented near-start window: 1 2 3 4 5 … 9. Nothing scales with 45 items.
+    expect(pageButtons).toHaveLength(6);
+    expect(screen.getByRole("button", { name: "Go to page 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Go to page 9" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Go to page 7" }),
+    ).not.toBeInTheDocument();
+
+    expect(screen.getByLabelText("Jump to page")).toBeInTheDocument();
+  });
+
+  it("jumps straight to a page the window does not show", () => {
+    renderNotification();
+
+    const input = screen.getByLabelText("Jump to page");
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
+
+    expect(screen.getByText("Page 8 of 9")).toBeInTheDocument();
   });
 });

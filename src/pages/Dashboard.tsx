@@ -8,8 +8,18 @@ import { getAtRiskVaults } from "../utils/atRiskVaults";
 import { useCallback, useMemo, useState, useEffect } from "react";
 import * as dashboardUtils from "../utils/dashboard";
 import type { VaultPreview, Activity, Deadline } from "../utils/dashboard";
-import type { VaultStatus, Vault } from "../types/vault";
+import type { Milestone, Vault } from "../types/vault";
 import { timelineProgress } from "../utils/vaultLifecycle";
+import { logger } from "../utils/logger";
+import { createSingleFlightRunner } from "../utils/singleFlight";
+import {
+  isNonEmptyString,
+  isPositiveAmount,
+  isValidCurrency,
+  isValidIsoTimestamp,
+  isValidVaultRouteId,
+  isVaultStatus,
+} from "../utils/vaultState";
 
 // ── Mock Data ─────────────────────────────────────────────────────────────────
 // Seed data lives in src/fixtures/dashboard.ts. VAULTS are loaded async from
@@ -38,7 +48,153 @@ const ACTIVITY_CFG: Record<
   redirected: { label: "Funds redirected", icon: "→", color: "var(--warning)" },
 };
 
+type ActivityConfig = (typeof ACTIVITY_CFG)[Activity["type"]];
+
+/**
+ * `activity` is a caller-supplied prop, so a type outside the union (a
+ * forward-compatible backend value, or a JS caller passing junk) must not
+ * dereference `undefined` and blank the page. Unrecognised types render with a
+ * neutral fallback instead.
+ */
+const ACTIVITY_FALLBACK_CFG: ActivityConfig = {
+  label: "Vault activity",
+  icon: "•",
+  color: "var(--muted)",
+};
+
+/**
+ * Own-property lookup so a hostile type such as "__proto__" resolves to the
+ * fallback rather than to `Object.prototype` (mirrors lookupVaultSafe).
+ */
+function activityConfig(type: string): ActivityConfig {
+  return Object.prototype.hasOwnProperty.call(ACTIVITY_CFG, type)
+    ? ACTIVITY_CFG[type as Activity["type"]]
+    : ACTIVITY_FALLBACK_CFG;
+}
+
 // Pure formatting functions have been extracted to src/utils/dashboard.ts and src/utils/vaultLifecycle.ts
+
+// ── Service response boundary ────────────────────────────────────────────────
+// `listVaults()` is typed as Promise<Vault[]>, but the seam is explicitly a
+// placeholder for a real Horizon/Soroban backend (see vaultService.ts). Until
+// that backend lands, every field it returns is untrusted input that crosses
+// into render and into the summary arithmetic. The helpers below are the single
+// place where that happens, so the rest of the page can assume its invariants.
+
+/**
+ * Stable, aggregatable failure codes. These are the only values recorded for a
+ * load failure: no vault names, ids, addresses, amounts, or raw error messages
+ * cross this boundary, so a failure stays diagnosable without leaking user
+ * data into logs or metrics.
+ */
+type VaultLoadFailureCode = "unavailable" | "invalid_response";
+
+/**
+ * A vault that cleared the boundary. `milestones` is narrowed to a real array
+ * of objects because `computeDashboardSummary` dereferences
+ * `milestone.status` while counting pending milestones.
+ */
+type AcceptedVault = Vault & { milestones: Milestone[] };
+
+/** Stable empty identities so render-time gating never invalidates memos. */
+const NO_VAULTS: VaultPreview[] = [];
+const NO_ACCEPTED_VAULTS: AcceptedVault[] = [];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export interface VaultListRead {
+  /** Vaults that cleared the boundary, in response order, ids unique. */
+  accepted: AcceptedVault[];
+  /** Entries refused: malformed, hostile, or a repeated id. */
+  rejected: number;
+  /**
+   * True when the payload yielded nothing renderable even though it claimed to
+   * carry vaults. The page must show a retryable error here rather than the
+   * "No vaults yet" empty state, which would assert a falsehood.
+   */
+  unusable: boolean;
+}
+
+/**
+ * Validates one service entry against exactly the fields this page consumes:
+ * id, name, status, amount, currency, createdAt, deadline and milestones.
+ * Fields the dashboard never renders (addresses, transactions, milestone
+ * details) are deliberately not gated — refusing to show a summary because an
+ * unrendered address is oddly shaped would drop real vaults for no user benefit.
+ *
+ * Returns null for anything that must not reach render.
+ */
+function readVaultEntry(entry: unknown): AcceptedVault | null {
+  if (!isRecord(entry)) return null;
+
+  const { id, name, status, amount, currency, createdAt, deadline, milestones } =
+    entry;
+
+  // The id becomes a React key and a `/vaults/:id` URL segment, so it must be a
+  // safe, bounded, non-prototype string.
+  if (!isValidVaultRouteId(id)) return null;
+  if (!isNonEmptyString(name)) return null;
+  if (!isVaultStatus(status)) return null;
+  // A non-finite amount would render as "NaN" and poison totalLocked.
+  if (!isPositiveAmount(amount)) return null;
+  if (!isValidCurrency(currency)) return null;
+  if (!isValidIsoTimestamp(createdAt)) return null;
+  if (!isValidIsoTimestamp(deadline)) return null;
+  if (!Array.isArray(milestones)) return null;
+
+  // A deadline at or before creation is an impossible vault; timelineProgress
+  // would report it as 0% or 100% without ever saying why.
+  if (new Date(deadline).getTime() <= new Date(createdAt).getTime()) {
+    return null;
+  }
+
+  return {
+    ...(entry as unknown as Vault),
+    // Milestone elements are untrusted too: drop holes rather than let the
+    // summary's `milestone.status` read dereference null.
+    milestones: milestones.filter(isRecord) as unknown as Milestone[],
+  };
+}
+
+/**
+ * Applies the boundary to a whole service payload.
+ *
+ * Invariants:
+ * - A non-array payload is unusable, never an empty vault list.
+ * - Ids are unique: a repeated id is refused, so React keys stay unique and a
+ *   duplicated record cannot be counted twice in the summary.
+ * - Refusing one entry never discards its siblings (partial failure tolerance).
+ *
+ * Exported so the boundary can be exercised directly by property-based tests;
+ * the page itself treats it as private.
+ */
+export function readVaultList(payload: unknown): VaultListRead {
+  if (!Array.isArray(payload)) {
+    return { accepted: [], rejected: 0, unusable: true };
+  }
+
+  const accepted: AcceptedVault[] = [];
+  const seenIds = new Set<string>();
+  let rejected = 0;
+
+  for (const entry of payload) {
+    const vault = readVaultEntry(entry);
+    if (vault === null || seenIds.has(vault.id)) {
+      rejected++;
+      continue;
+    }
+    seenIds.add(vault.id);
+    accepted.push(vault);
+  }
+
+  return {
+    accepted,
+    rejected,
+    unusable: payload.length > 0 && accepted.length === 0,
+  };
+}
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function SummaryCard({
@@ -177,54 +333,105 @@ export default function Dashboard({
   deadlines?: Deadline[];
 } = {}) {
   const [vaults, setVaults] = useState<VaultPreview[]>([]);
-  const [fullVaults, setFullVaults] = useState<Vault[]>([]);
+  const [fullVaults, setFullVaults] = useState<AcceptedVault[]>([]);
+  const [rejectedCount, setRejectedCount] = useState(0);
   const [vaultStatus, setVaultStatus] = useState<
     "loading" | "empty" | "data" | "error"
   >("loading");
   const [retryCount, setRetryCount] = useState(0);
 
+  // One load per component instance, single-flight. Concurrent callers receive
+  // the in-flight request instead of starting a second one, so a React
+  // StrictMode double-mount (src/main.tsx renders <StrictMode>) or an
+  // overlapping retry can never issue two list requests for one page load, and
+  // cannot apply two responses out of order. The runner is created lazily per
+  // instance so separate Dashboard mounts never share in-flight state.
+  const [vaultLoadRunner] = useState(() =>
+    createSingleFlightRunner(listVaults),
+  );
+
   useEffect(() => {
     let cancelled = false;
     setVaultStatus("loading");
-    listVaults()
+    setRejectedCount(0);
+
+    const failWith = (code: VaultLoadFailureCode, received: number) => {
+      logger.error("[dashboard] vault_load_failed", {
+        code,
+        attempt: retryCount + 1,
+        received,
+      });
+      // Drop any previously loaded data: an error must not leave stale totals
+      // on screen next to the failure notice.
+      setFullVaults([]);
+      setVaults([]);
+      setRejectedCount(0);
+      setVaultStatus("error");
+    };
+
+    vaultLoadRunner
+      .run()
       .then((loaded) => {
         if (cancelled) return;
-        setFullVaults(loaded);
+        const { accepted, rejected, unusable } = readVaultList(loaded);
+        if (unusable) {
+          failWith("invalid_response", Array.isArray(loaded) ? loaded.length : 0);
+          return;
+        }
+        if (rejected > 0) {
+          logger.warn("[dashboard] vault_entries_rejected", { count: rejected });
+        }
+        setFullVaults(accepted);
         setVaults(
-          loaded.map((v) => ({
+          accepted.map((v) => ({
             id: v.id,
             name: v.name,
             amount: v.amount,
             currency: v.currency,
-            status: v.status as VaultStatus,
+            // Narrowed by the boundary, so no status cast is needed here.
+            status: v.status,
             deadline: v.deadline,
             progressPct: timelineProgress(v.createdAt, v.deadline),
           })),
         );
-        setVaultStatus(loaded.length === 0 ? "empty" : "data");
+        setRejectedCount(rejected);
+        setVaultStatus(accepted.length === 0 ? "empty" : "data");
       })
       .catch(() => {
-        if (!cancelled) setVaultStatus("error");
+        if (cancelled) return;
+        failWith("unavailable", 0);
       });
+
     return () => {
       cancelled = true;
     };
-  }, [retryCount]);
+  }, [vaultLoadRunner, retryCount]);
 
   const retryVaults = useCallback(() => setRetryCount((c) => c + 1), []);
 
+  // INVARIANT: vault-derived state is surfaced only in the "data" state. Gating
+  // at render time (rather than relying on every failure path remembering to
+  // clear) means the summary cards can never contradict the vault list — e.g.
+  // stale totals above a "Failed to load vaults" message after a failed retry.
+  const shownVaults = vaultStatus === "data" ? vaults : NO_VAULTS;
+  const shownFullVaults = vaultStatus === "data" ? fullVaults : NO_ACCEPTED_VAULTS;
+
   const computedSummary = useMemo(
-    () => dashboardUtils.computeDashboardSummary(fullVaults),
-    [fullVaults],
+    () => dashboardUtils.computeDashboardSummary(shownFullVaults),
+    [shownFullVaults],
   );
   const memoizedSummary = useMemo(
     () => dashboardUtils.formatSummary(computedSummary),
     [computedSummary],
   );
+  // `activity` / `deadlines` are caller-supplied; a non-array must degrade to
+  // "nothing to show" rather than throw while spreading it.
   const memoizedActivity = useMemo(
-    () => dashboardUtils.processActivity(activity),
+    () =>
+      dashboardUtils.processActivity(Array.isArray(activity) ? activity : []),
     [activity],
   );
+  const safeDeadlines = Array.isArray(deadlines) ? deadlines : [];
 
   return (
     <div
@@ -330,7 +537,7 @@ export default function Dashboard({
       </div>
 
       {/* ── At Risk Vaults ── */}
-      <AtRiskSection vaults={vaults} />
+      <AtRiskSection vaults={shownVaults} />
 
       {/* ── Main grid: vault list + sidebar ── */}
       <div
@@ -361,12 +568,13 @@ export default function Dashboard({
             />
             {vaultStatus === "loading" && (
               <Text role="body" as="p" style={{ color: "var(--muted)" }}>
-                Loading vaults…
+                <span role="status">Loading vaults…</span>
               </Text>
             )}
 
             {vaultStatus === "error" && (
               <div
+                role="alert"
                 style={{
                   textAlign: "center",
                   padding: "2.5rem 1rem",
@@ -376,7 +584,9 @@ export default function Dashboard({
                 <Text role="body" as="p">
                   Failed to load vaults.
                 </Text>
-                <button onClick={retryVaults}>Retry</button>
+                <button type="button" onClick={retryVaults}>
+                  Retry
+                </button>
               </div>
             )}
 
@@ -425,7 +635,23 @@ export default function Dashboard({
                   gap: "0.75rem",
                 }}
               >
-                {vaults.map((v) => (
+                {/* Partial failure is never silent: a refused entry is neither
+                    rendered nor counted in the summary, so the user is told how
+                    many records the response could not be trusted for. */}
+                {rejectedCount > 0 && (
+                  <Text
+                    role="caption"
+                    as="p"
+                    style={{ color: "var(--warning)", margin: 0 }}
+                  >
+                    <span role="status">
+                      {rejectedCount === 1
+                        ? "1 vault could not be verified and is not shown."
+                        : `${rejectedCount} vaults could not be verified and are not shown.`}
+                    </span>
+                  </Text>
+                )}
+                {shownVaults.map((v) => (
                   <VaultCard
                     key={v.id}
                     id={v.id}
@@ -459,7 +685,7 @@ export default function Dashboard({
               }}
             >
               {memoizedActivity.map((a) => {
-                const cfg = ACTIVITY_CFG[a.type];
+                const cfg = activityConfig(a.type);
                 return (
                   <div
                     key={a.id}
@@ -526,7 +752,7 @@ export default function Dashboard({
         <div
           style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}
         >
-          <UpcomingDeadlines deadlines={deadlines} />
+          <UpcomingDeadlines deadlines={safeDeadlines} />
 
           {/* Success Rate Chart (sparkline bars) */}
           <div

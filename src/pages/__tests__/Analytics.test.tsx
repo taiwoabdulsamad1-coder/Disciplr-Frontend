@@ -42,10 +42,13 @@ vi.mock('recharts', () => ({
   Line: () => null,
 }))
 
+const mockSave = vi.fn()
+const mockText = vi.fn()
+
 vi.mock('jspdf', () => ({
   default: class {
-    text() {}
-    save() {}
+    text = mockText
+    save = mockSave
     addImage() {}
     rect() {}
     line() {}
@@ -221,6 +224,24 @@ describe('Analytics lazy route', () => {
       () => expect(screen.getByRole('button', { name: /pdf report/i })).not.toBeDisabled(),
       { timeout: 2000 },
     )
+  })
+
+  it('generates and saves PDF report with correct filename and title', async () => {
+    const { default: LazyLoadedAnalytics } = await import('../Analytics')
+
+    render(
+      <MemoryRouter initialEntries={['/analytics?period=7d']}>
+        <LazyLoadedAnalytics />
+      </MemoryRouter>,
+    )
+
+    const pdfBtn = screen.getByRole('button', { name: /pdf report/i })
+    fireEvent.click(pdfBtn)
+
+    await waitFor(() => {
+      expect(mockSave).toHaveBeenCalledWith('disciplr-report-7d.pdf')
+    })
+    expect(mockText).toHaveBeenCalledWith('Disciplr Analytics Report', 14, 18)
   })
 
   it('shows the tokenized chart legend when comparison mode is enabled', async () => {

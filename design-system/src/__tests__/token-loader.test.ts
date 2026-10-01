@@ -7,7 +7,6 @@ const mockedFs = fs as jest.Mocked<typeof fs>;
 describe('token-loader', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   describe('loadTokens', () => {
@@ -61,83 +60,25 @@ describe('token-loader', () => {
       });
     });
 
-    it('should continue and warn if a file fails to load', () => {
-      mockedFs.readFileSync.mockImplementation((path) => {
-        if (path.toString().includes('typography.json')) throw new Error('File not found');
-        if (path.toString().includes('colors.json')) return '{"color": "red"}';
-        if (path.toString().includes('spacing.json')) return '{"space": "4px"}';
-        if (path.toString().includes('shadows.json')) return '{"shadow": "1px"}';
-        if (path.toString().includes('motion.json')) return '{"motion": "ease"}';
-        if (path.toString().includes('borders.json')) return '{"border": "1px"}';
-        if (path.toString().includes('z-index.json')) return '{"zIndex": 100}';
-        if (path.toString().includes('opacity.json')) return '{"opacity": 0.5}';
-        if (path.toString().includes('breakpoints.json')) return '{"breakpoint": "768px"}';
-        if (path.toString().includes('toast.json')) return '{"toast": {"maxVisible": 5}}';
-        return '{}';
-      });
-
-      const allTokens = getAllTokens();
-
-      expect(allTokens).toEqual({
-        "color": "red",
-        "space": "4px",
-        "shadow": "1px",
-        "motion": "ease",
-        "border": "1px",
-        "zIndex": 100,
-        "opacity": 0.5,
-        "breakpoint": "768px",
-        "toast": { "maxVisible": 5 }
-      });
-      expect(allTokens).not.toHaveProperty('font');
-    });
-
-    it('should warn with the name of the file that failed to load', () => {
+    it('should fail loudly when a required token file is missing', () => {
       mockedFs.readFileSync.mockImplementation((path) => {
         if (path.toString().includes('typography.json')) throw new Error('File not found');
         return '{}';
       });
 
-      getAllTokens();
-
-      expect(console.warn).toHaveBeenCalledTimes(1);
-      expect(console.warn).toHaveBeenCalledWith(
-        'Failed to load typography.json:',
-        expect.any(Error)
+      expect(() => getAllTokens()).toThrow(
+        'Failed to load required token file "typography.json": File not found'
       );
     });
 
-    it('should continue and warn if a file has malformed JSON', () => {
+    it('should identify a required token file containing malformed JSON', () => {
       mockedFs.readFileSync.mockImplementation((path) => {
         if (path.toString().includes('typography.json')) return '{"invalid": }';
-        if (path.toString().includes('colors.json')) return '{"color": "red"}';
-        if (path.toString().includes('spacing.json')) return '{"space": "4px"}';
-        if (path.toString().includes('shadows.json')) return '{"shadow": "1px"}';
-        if (path.toString().includes('motion.json')) return '{"motion": "ease"}';
-        if (path.toString().includes('borders.json')) return '{"border": "1px"}';
-        if (path.toString().includes('z-index.json')) return '{"zIndex": 100}';
-        if (path.toString().includes('opacity.json')) return '{"opacity": 0.5}';
-        if (path.toString().includes('breakpoints.json')) return '{"breakpoint": "768px"}';
-        if (path.toString().includes('toast.json')) return '{"toast": {"maxVisible": 5}}';
         return '{}';
       });
 
-      const allTokens = getAllTokens();
-
-      expect(allTokens).toEqual({
-        "color": "red",
-        "space": "4px",
-        "shadow": "1px",
-        "motion": "ease",
-        "border": "1px",
-        "zIndex": 100,
-        "opacity": 0.5,
-        "breakpoint": "768px",
-        "toast": { "maxVisible": 5 }
-      });
-      expect(console.warn).toHaveBeenCalledWith(
-        'Failed to load typography.json:',
-        expect.any(SyntaxError)
+      expect(() => getAllTokens()).toThrow(
+        /^Failed to load required token file "typography\.json":/
       );
     });
 
@@ -153,31 +94,16 @@ describe('token-loader', () => {
       expect(allTokens).toEqual({"token": "from-breakpoints"});
     });
 
-    it('should still merge a file ordered after a failing one', () => {
+    it('should stop reading after the first required file fails', () => {
       mockedFs.readFileSync.mockImplementation((path) => {
         if (path.toString().includes('colors.json')) throw new Error('File not found');
-        if (path.toString().includes('breakpoints.json')) return '{"breakpoint": "768px"}';
         return '{}';
       });
 
-      const allTokens = getAllTokens();
-
-      expect(allTokens).toEqual({"breakpoint": "768px"});
-      expect(console.warn).toHaveBeenCalledWith(
-        'Failed to load colors.json:',
-        expect.any(Error)
+      expect(() => getAllTokens()).toThrow(
+        'Failed to load required token file "colors.json": File not found'
       );
-    });
-
-    it('should return an empty object and warn once per file when all files fail', () => {
-      mockedFs.readFileSync.mockImplementation(() => {
-        throw new Error('File not found');
-      });
-
-      const allTokens = getAllTokens();
-
-      expect(allTokens).toEqual({});
-      expect(console.warn).toHaveBeenCalledTimes(9);
+      expect(mockedFs.readFileSync).toHaveBeenCalledTimes(1);
     });
   });
 });

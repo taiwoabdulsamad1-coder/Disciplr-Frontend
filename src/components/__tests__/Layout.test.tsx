@@ -495,3 +495,45 @@ describe('Layout drawer state machine integration', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1263 — Transactions icon must not carry an inline display:none
+// The show/hide logic lives entirely in Layout.css (media-query driven).
+// An inline style would always win the cascade and prevent the CSS rule from
+// ever revealing the icon at the intended breakpoint.
+// ---------------------------------------------------------------------------
+describe('Layout transactions icon — no inline style override (issue #1263)', () => {
+  test('the header-transactions-icon span has no inline style attribute', () => {
+    const { container } = renderLayout('/');
+    const iconSpan = container.querySelector('.header-transactions-icon');
+    expect(iconSpan).toBeInTheDocument();
+    // The span must carry zero inline style declarations so that Layout.css's
+    // media-query rule at min-width: 400px can take effect unobstructed.
+    expect(iconSpan).not.toHaveAttribute('style');
+  });
+
+  test('the header-transactions-icon span does not carry an inline display value', () => {
+    const { container } = renderLayout('/');
+    const iconSpan = container.querySelector('.header-transactions-icon') as HTMLElement | null;
+    expect(iconSpan).toBeInTheDocument();
+    // Confirms no programmatic style.display has been applied — the span's
+    // visibility is governed by CSS class + media query only.
+    expect(iconSpan?.style.display).toBe('');
+  });
+
+  test('the header-transactions-label span also has no inline style attribute', () => {
+    const { container } = renderLayout('/');
+    const labelSpan = container.querySelector('.header-transactions-label');
+    expect(labelSpan).toBeInTheDocument();
+    expect(labelSpan).not.toHaveAttribute('style');
+  });
+
+  test('both icon and label spans are present in the DOM (CSS-only toggle, not conditional render)', () => {
+    const { container } = renderLayout('/');
+    // Both elements must exist so the CSS media-query can switch between them.
+    // If either were conditionally removed from the DOM, the breakpoint toggle
+    // would be impossible.
+    expect(container.querySelector('.header-transactions-icon')).toBeInTheDocument();
+    expect(container.querySelector('.header-transactions-label')).toBeInTheDocument();
+  });
+});

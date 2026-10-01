@@ -6,152 +6,104 @@ import { reportWebVitals } from './utils/reportWebVitals'
 
 /**
  * Entry point invariants:
- * 1. The #root container must exist before mounting. If it is missing we fail fast
- *    with a non-sensitive diagnostic message rather than crashing with a
- *    confusing TypeError or silently doing nothing.
- * 2. Mounting must be idempotent: repeated calls (Hmr hot reload, double import)
- *    must not create a second root or lose the existing tree.
- * 3. Web vitals reporting must never break the app and must not leak sensitive
- *    data into the console.
- * 4. Failures in the root render must be surfaced and not swallowed.
+ * 1. The #root element must exist and be an HTMLElement before React attaches.
+ * 2. Mounting must happen at most once per document, even under concurrent calls.
+ * 3. Web vitals reporting must never throw into the bootstrap path.
+ * 4. Failures must be surfaced through a user-visible error without leaking sensitive data.
  */
 
-export interface MountOptions {
-  /** Element to mount into. Defaults to document.getElementById('root'). */
-  container?: HTMLElement | null
-  /** Optional callback for web vitals. Defaults to a console reporter. */
-  onWebVitals?: (callback: (metric: unknown) => void) => void
+export interface BootstrapOptions {
+  /** Document to query for the root element. Defaults to the global document. */
+  document?: Document
+  /** Id of the root element. Defaults to 'root'. */
+  rootId?: string
+  /** Optional callback for web vitals. */
+  onWebVital?: (value: unknown) => void
+  /** Optional logger for diagnostics. */
+  logger?: { info: (... args: unknown[]) => void; error: (... args: unknown[]) => void }
 }
 
-export interface MountResult {
-  root: Root
-  container: HTMLElement
+export const REPORT_WEB_VITALS_FAILURE_LOG = '[Web Vitals] reporting failed'
+
+function isHtmlElement(value: unknown): value is HTMLElement {
+  return typeof HTMLElement !== 'undefined' && value instanceof HTMLElement
 }
 
-let activeRoot: Root | null = null
-let activeContainer: HTMLElement | null = null
-
-/**
- * Resolve the root container. Throws a deterministic, diagnosable error when
- * the container is missing or is not an HTMLElement.
- */
-export function resolveRootContainer(
-  container?: HTMLElement | null,
-  doc: Document = document,
-): HTMLElement {
-  const resolved = container ?? doc.getElementById('root')
-  if (!resolved) {
-    throw new Error('Root element #root not found')
+function resolveRootElement(doc: Document, rootId: string): HTMLElement {
+  if (typeof rootId !== 'string' || rootId.trim().length === 0) {
+    throw new Error('Root element id must be a non-empty string')
   }
-  if (!(resolved instanceof HTMLElement)) {
-    throw new Error('Root container is not an HTMLElement')
-  }
-  return resolved
 
+  const el = doc.getElementById(rootId)
+  if (!el) {
+    throw new Error(`Root element #${rootId} not found`)
+  }
+  if (!isHtmlElement(el)) {
+    throw new Error(`Root element #${rootId} is not an HTMLElement`)
+  }
+  return el
 }
 
-/**
- * Safe web-vitals reporter. Never throws and never logs the raw metric object
- * (console logging is limited to a stable label + value when available).
- */
-export function createWebVitalsReporter(
-  log: (message: string, value?: number) => void = (_message, _value) => {},
-): (metric: unknown) => void {
-  return (metric) => {
-    try {
-      const m = metric as { name?: unknown; value?: unknown } | null | undefined
-      if (!m || typeof m !== 'object') return
-      const name = typeof m.name === 'string' ? m.name : 'unknown'
-      const value = typeof m.value === 'number' ? m.value : undefined
-      log(`[Web Vitals] ${name}`, value)
-    } catch {
-      // Never allow observability to break the app.
-    }
+function safeReportWebVitals(
+  onWebVital: (value: unknown) => void,
+  logger: { info: (... args: unknown[]) => void; error: (... args: unknown[]) => void },
+): void {
+  try {
+    reportWebVitals((value) => {
+      try {
+        onWebVital(value)
+      } catch (error) {
+        // A consumer callback failure must not break the bootstrap path.
+        logger.error(REPORT_WEB_VITALS_FAILURE_LOG, error)
+      }
+    })
+  } catch (error) {
+    // reportWebVitals itself failing must not crash the app.
+    logger.error(REPORT_WEB_VITALS_FAILURE_LOG, error)
   }
 }
 
-/**
- * Mount the app. Idempotent: calling twice with the same container reuses the
- * existing root. Calling with a different container unmounts the previous root
- * first to avoid leaking a second React tree.
- */
-export function mountApp(options: MountOptions = {}): MountResult {
-  const container = resolveRootContainer(options.container)
+function renderErrorUI(el: HTMLElement, message: string): void {
+  el.setAttribute('role', 'alert')
+  el.setAttribute('data-app-error', 'true')
+  el.textContent = message
+}
 
-  if (activeRoot && activeContainer === container) {
-    // Already mounted into this container; nothing to do.
-    return { root: activeRoot, container }
+export function bootstrap(options: BootstrapOptions = {}): Root {
+  const doc = options.document ?? document
+  const rootId = options.rootId ?? 'root'
+  const logger = options.logger ?? console
+  const onWebVital = options.onWebVital ?? ((value) => logger.info('[Web Vitals]', value))
+
+  // Resolve and validate the root element before any side effects.
+  const rootEl = resolveRootElement(doc, rootId)
+
+  // Guard against concurrent double mounting on the same element.
+  if (rootEl.getAttribute('data-app-mounted') === 'true') {
+    throw new Error(`Root element #${rootId} is already mounted`)
   }
+  rootEl.setAttribute('data-app-mounted', 'true')
 
-  if (activeRoot && activeContainer !== container) {
-    // Recycle the previous root to avoid leaking a second tree.
-    try {
-      activeRoot.unmount()
-    } catch {
-      // Unmount failures must not prevent the new mount.
-    }
-    activeRoot = null
-    activeContainer = null
-  }
-
-  const root = createRoot(container)
-  activeRoot = root
-  activeContainer = container
+  safeReportWebVitals(onWebVital, logger)
 
   try {
+    const root = createRoot(rootEl)
     root.render(
       <StrictMode>
         <App />
       </StrictMode>,
     )
+    return root
   } catch (error) {
-    // Roll back the active references so a retry can attempt a fresh mount.
-    activeRoot = null
-    activeContainer = null
-    try {
-      root.unmount()
-    } catch {
-      // ignore rollback failures
-    }
+    // Roll back mount marker so a retry can succeed, and surface a safe message.
+    rootEl.removeAttribute('data-app-mounted')
+    renderErrorUI(rootEl, 'Something went wrong while starting the app.')
+    logger.error('[Bootstrap] failed to mount the application', error)
     throw error
   }
-
-  const onWebVitals = options.onWebVitals ?? reportWebVitals
-  try {
-    onWebVitals(createWebVitalsReporter())
-  } catch {
-    // Observability must never break the app.
-  }
-
-  return { root, container }
 }
 
-/** Test-only helper to reset module state between tests. */
-export function __resetMountStateForTests(): void {
-  if (activeRoot) {
-    try {
-      activeRoot.unmount()
-    } catch {
-      // ignore
-    }
-  }
-  activeRoot = null
-  activeContainer = null
-}
-
-/** Test-only accessor for the current active container. */
-export function __getActiveContainerForTests(): HTMLElement | null {
-  return activeContainer
-}
-
-// Auto-mount when executed in a browser environment with a #root element.
-// Guarded so importing this module in a test or SSR environment does not throw.
+// Auto-bootstrap only in a browser environment with a document.
 if (typeof document !== 'undefined') {
-  const autoRoot = document.getElementById('root')
-  if (autoRoot) {
-    mountApp({ container: autoRoot })
-  } else {
-    // Fail fast with a deterministic message when the container is missing.
-    throw new Error('Root element #root not found')
-  }
+  bootstrap()
 }

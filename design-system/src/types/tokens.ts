@@ -6,10 +6,12 @@ export interface ColorToken {
   $type: 'color';
   $value: string;
   $description?: string;
-  contrast?: {
-    light?: number;
-    dark?: number;
-  };
+  /**
+   * Contrast ratios keyed by the surface they were measured against
+   * (e.g. `onWhite`, `onNeutral50`). Numeric only; callers that only need
+   * `light`/`dark` can read those keys directly.
+   */
+  contrast?: Record<string, number>;
   accessibility?: {
     contrastRatios?: Record<string, number>;
     wcagLevel?: 'AA' | 'AAA';
@@ -46,15 +48,27 @@ export interface ShadowLayer {
   color: string;
 }
 
+/**
+ * Shadow tokens are either an explicit layer stack or the `'none'` sentinel
+ * used by the flat `level-0` token in `tokens/shadows.json`.
+ */
 export interface ShadowToken {
   $type: 'shadow';
-  $value: ShadowLayer | ShadowLayer[];
+  $value: ShadowLayer | ShadowLayer[] | 'none';
   $description?: string;
 }
 
+/**
+ * Motion tokens cover the three DTCG shapes shipped in `tokens/motion.json`:
+ * `duration` (e.g. "200ms"), `cubicBezier` (exactly four unit-less numbers),
+ * and `boolean` (e.g. the `reducedMotion` preference flag).
+ *
+ * The `boolean` member was added to describe already-shipped data; it is an
+ * additive, backwards-compatible widening of this union.
+ */
 export interface MotionToken {
-  $type: 'duration' | 'cubicBezier';
-  $value: string | number[];
+  $type: 'duration' | 'cubicBezier' | 'boolean';
+  $value: string | number[] | boolean;
   $description?: string;
 }
 

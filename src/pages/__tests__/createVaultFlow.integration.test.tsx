@@ -1,3 +1,4 @@
+import { ACCOUNT_A, ACCOUNT_B, ACCOUNT_C, ACCOUNT_D } from '@/__tests__/fixtures/stellarAddresses';
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CreateVault from "../CreateVault";
@@ -16,8 +17,8 @@ import { useWallet } from "../../context/WalletContext";
 const mockUseWallet = vi.mocked(useWallet);
 
 // Valid test addresses
-const validSuccessAddress = `G${"A".repeat(55)}`;
-const validFailureAddress = `G${"B".repeat(55)}`;
+const validSuccessAddress = ACCOUNT_A;
+const validFailureAddress = ACCOUNT_B;
 const futureDeadline = "2030-01-01T00:00";
 const validAmount = "100.5";
 
@@ -611,8 +612,8 @@ describe("CreateVault Flow - Integration Tests", () => {
       render(<CreateVault />);
 
       // Create different valid addresses (Stellar uses specific Base32 alphabet G-Z, 2-7)
-      const altSuccessAddress = `G${"C".repeat(55)}`;
-      const altFailureAddress = `G${"D".repeat(55)}`;
+      const altSuccessAddress = ACCOUNT_C;
+      const altFailureAddress = ACCOUNT_D;
 
       fillField(/amount/i, validAmount);
       fillField(/deadline/i, futureDeadline);

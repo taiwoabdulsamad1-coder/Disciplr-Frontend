@@ -226,6 +226,23 @@ describe('NotificationSettings component behavior', () => {
     expect(selectedOption?.value).toBe(frequencySelect.value);
   });
 
+  it('renders Occurrence option for value 1 and includes Not set option', () => {
+    render(<NotificationSettings />);
+
+    const frequencySelect = screen.getByLabelText('Notification Frequency') as HTMLSelectElement;
+    const occurrenceOption = Array.from(frequencySelect.options).find(
+      (opt) => opt.value === '1',
+    );
+    expect(occurrenceOption).toBeDefined();
+    expect(occurrenceOption?.textContent).toBe('Occurrence');
+
+    const notSetOption = Array.from(frequencySelect.options).find(
+      (opt) => opt.value === '',
+    );
+    expect(notSetOption).toBeDefined();
+    expect(notSetOption?.textContent).toBe('Not set');
+  });
+
   it('renders vault notification toggles and toggles individual vault on click', () => {
     render(<NotificationSettings />);
 

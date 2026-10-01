@@ -6,12 +6,62 @@ import { Tooltip } from "../Tooltip";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function renderTooltip(content = "Tooltip text", position: "top" | "bottom" = "top") {
+function renderTooltip(
+  content = "Tooltip text",
+  position: "top" | "bottom" = "top",
+) {
   return render(
     <Tooltip content={content} position={position}>
       <button type="button">Trigger</button>
     </Tooltip>,
   );
+}
+
+/**
+ * Creates a controllable matchMedia mock for a single query.
+ * Returns:
+ *   - `setMatches(value)` — update whether the query matches
+ *   - `fireChange()` — dispatch the 'change' event to all registered listeners
+ *
+ * The mock is installed on `window.matchMedia` and automatically restored
+ * after each test via the returned `restore` function.
+ */
+function createControllableMatchMedia(initialMatches = false) {
+  let currentMatches = initialMatches;
+  const listeners: Array<(e: { matches: boolean }) => void> = [];
+
+  const mql = {
+    get matches() {
+      return currentMatches;
+    },
+    media: "(prefers-reduced-motion: reduce)",
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn((_: string, cb: (e: { matches: boolean }) => void) => {
+      listeners.push(cb);
+    }),
+    removeEventListener: vi.fn((_: string, cb: (e: { matches: boolean }) => void) => {
+      const idx = listeners.indexOf(cb);
+      if (idx !== -1) listeners.splice(idx, 1);
+    }),
+    dispatchEvent: vi.fn(),
+  };
+
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = vi.fn().mockReturnValue(mql);
+
+  return {
+    setMatches(value: boolean) {
+      currentMatches = value;
+    },
+    fireChange() {
+      listeners.forEach((cb) => cb({ matches: currentMatches }));
+    },
+    restore() {
+      window.matchMedia = originalMatchMedia;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +91,9 @@ describe("Tooltip", () => {
 
   it("renders the tooltip content string", () => {
     renderTooltip("Full hash value");
-    expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent("Full hash value");
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveTextContent(
+      "Full hash value",
+    );
   });
 
   // ── Hover ─────────────────────────────────────────────────────────────────
@@ -60,7 +112,9 @@ describe("Tooltip", () => {
 
     fireEvent.mouseLeave(trigger);
     act(() => vi.runAllTimers());
-    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({ visibility: "hidden" });
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({
+      visibility: "hidden",
+    });
   });
 
   // ── Focus ─────────────────────────────────────────────────────────────────
@@ -79,7 +133,9 @@ describe("Tooltip", () => {
 
     fireEvent.blur(trigger);
     act(() => vi.runAllTimers());
-    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({ visibility: "hidden" });
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({
+      visibility: "hidden",
+    });
   });
 
   // ── Escape key ────────────────────────────────────────────────────────────
@@ -90,7 +146,9 @@ describe("Tooltip", () => {
     expect(screen.getByRole("tooltip")).toHaveStyle({ visibility: "visible" });
 
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({ visibility: "hidden" });
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({
+      visibility: "hidden",
+    });
   });
 
   it("does not throw when Escape is pressed while tooltip is already hidden", () => {
@@ -138,13 +196,19 @@ describe("Tooltip", () => {
 
   it("tooltip is aria-hidden when not visible", () => {
     renderTooltip();
-    expect(screen.getByRole("tooltip", { hidden: true })).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("tooltip", { hidden: true })).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 
   it("tooltip is not aria-hidden when visible", () => {
     renderTooltip();
     fireEvent.mouseEnter(screen.getByRole("button"));
-    expect(screen.getByRole("tooltip")).not.toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("tooltip")).not.toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
   });
 
   // ── Position prop ─────────────────────────────────────────────────────────
@@ -183,6 +247,146 @@ describe("Tooltip", () => {
   it("applies the correct design system z-index token", () => {
     renderTooltip();
     const tooltip = screen.getByRole("tooltip", { hidden: true });
-    expect(tooltip).toHaveStyle({ zIndex: "var(--z-index-tooltip, 150)" });
+    expect(tooltip).toHaveStyle({ zIndex: "var(--z-index-tooltip)" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reduced-motion behaviour (usePrefersReducedMotion integration)
+// ---------------------------------------------------------------------------
+
+describe("Tooltip — prefers-reduced-motion", () => {
+  // These tests install a controllable matchMedia mock so they can drive the
+  // MediaQueryList 'change' event directly, verifying that Tooltip reacts to
+  // an in-session OS preference toggle without needing an external re-render.
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  it("omits CSS transition styles when prefers-reduced-motion is active on mount", () => {
+    const media = createControllableMatchMedia(true); // reduced motion ON from the start
+    try {
+      renderTooltip();
+      fireEvent.mouseEnter(screen.getByRole("button"));
+      const tooltip = screen.getByRole("tooltip");
+      // When reduced motion is preferred the transition property must be absent.
+      expect(tooltip).not.toHaveStyle({ transition: expect.stringContaining("opacity") });
+    } finally {
+      media.restore();
+    }
+  });
+
+  it("applies CSS transition styles when prefers-reduced-motion is not active", () => {
+    const media = createControllableMatchMedia(false); // reduced motion OFF
+    try {
+      renderTooltip();
+      fireEvent.mouseEnter(screen.getByRole("button"));
+      const tooltip = screen.getByRole("tooltip");
+      expect(tooltip).toHaveStyle({ transition: "opacity 150ms ease, transform 150ms ease" });
+    } finally {
+      media.restore();
+    }
+  });
+
+  it("hides instantly (0 ms delay) when prefers-reduced-motion is active", () => {
+    const media = createControllableMatchMedia(true);
+    try {
+      renderTooltip();
+      const trigger = screen.getByRole("button");
+
+      fireEvent.mouseEnter(trigger);
+      fireEvent.mouseLeave(trigger);
+
+      // With reduced motion the hide timer is 0 ms — tooltip should be hidden
+      // as soon as pending timers are flushed.
+      act(() => vi.runAllTimers());
+      expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({ visibility: "hidden" });
+    } finally {
+      media.restore();
+    }
+  });
+
+  it("reactively removes transition when OS preference changes to reduce-motion mid-session", () => {
+    // Start with reduced motion OFF so Tooltip mounts with transitions enabled.
+    const media = createControllableMatchMedia(false);
+    try {
+      renderTooltip();
+
+      // Confirm transition is present while reduced motion is off.
+      fireEvent.mouseEnter(screen.getByRole("button"));
+      expect(screen.getByRole("tooltip")).toHaveStyle({
+        transition: "opacity 150ms ease, transform 150ms ease",
+      });
+
+      // Simulate the user enabling "Reduce Motion" in their OS settings.
+      act(() => {
+        media.setMatches(true);
+        media.fireChange();
+      });
+
+      // The hook must have re-rendered the component — transition should now be gone.
+      expect(screen.getByRole("tooltip")).not.toHaveStyle({
+        transition: expect.stringContaining("opacity"),
+      });
+    } finally {
+      media.restore();
+    }
+  });
+
+  it("reactively restores transition when OS preference changes back to allow motion mid-session", () => {
+    // Start with reduced motion ON.
+    const media = createControllableMatchMedia(true);
+    try {
+      renderTooltip();
+
+      fireEvent.mouseEnter(screen.getByRole("button"));
+      // Confirm no transition while reduced motion is active.
+      expect(screen.getByRole("tooltip")).not.toHaveStyle({
+        transition: expect.stringContaining("opacity"),
+      });
+
+      // User disables "Reduce Motion" in their OS settings.
+      act(() => {
+        media.setMatches(false);
+        media.fireChange();
+      });
+
+      // Transition should be re-applied reactively.
+      expect(screen.getByRole("tooltip")).toHaveStyle({
+        transition: "opacity 150ms ease, transform 150ms ease",
+      });
+    } finally {
+      media.restore();
+    }
+  });
+
+  it("uses instant hide delay after OS enables reduce-motion while tooltip is mounted", () => {
+    // Start with motion allowed, then toggle reduce-motion on.
+    const media = createControllableMatchMedia(false);
+    try {
+      renderTooltip();
+      const trigger = screen.getByRole("button");
+
+      // Enable reduced motion while the component is alive.
+      act(() => {
+        media.setMatches(true);
+        media.fireChange();
+      });
+
+      fireEvent.mouseEnter(trigger);
+      fireEvent.mouseLeave(trigger);
+
+      // The hide timer should now be 0 ms — tooltip hidden after flush.
+      act(() => vi.runAllTimers());
+      expect(screen.getByRole("tooltip", { hidden: true })).toHaveStyle({ visibility: "hidden" });
+    } finally {
+      media.restore();
+    }
   });
 });

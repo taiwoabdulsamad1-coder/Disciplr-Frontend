@@ -117,6 +117,9 @@ shadows.json
 motion.json
 borders.json
 z-index.json
+opacity.json
+breakpoints.json
+toast.json
 ```
 
 ### Merge behaviour
@@ -137,9 +140,9 @@ return allTokens;
 - **Later files win:** if two token files define the same top-level key, the
   value from the later file in the list overwrites the earlier one. Avoid
   duplicate top-level keys across token files.
-- **Partial success:** if a single file fails to load, a warning is emitted via
-  `logger.warn` and that file is skipped; remaining files are still loaded. The
-  caller receives whatever subset was successfully merged.
+- **Required files fail loudly:** if a file is missing, unreadable, or contains
+  malformed JSON, `getAllTokens` throws an error naming that file. Callers and
+  CI never receive a silently incomplete token set.
 - **No deep merge:** only top-level keys are merged. Nested objects from
   different files are not combined — the last writer for a given key wins in
   full.
@@ -180,8 +183,8 @@ try {
 }
 
 // ── Load all tokens at once ──────────────────────────────────────────────────
-// Returns a merged DesignTokens object covering all seven built-in token files.
-// Missing or malformed files are skipped with a logger.warn; they do not throw.
+// Returns a merged DesignTokens object covering all ten built-in token files.
+// Missing, unreadable, or malformed required files throw with file context.
 const everything = getAllTokens();
 ```
 

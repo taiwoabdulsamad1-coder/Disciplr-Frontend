@@ -41,9 +41,11 @@ export function WalletSelectionModal({ onClose }: WalletSelectionModalProps) {
         connectPending.current = true;
         try {
             const connected = await connect();
-            if (isMounted.current && connected) {
+            if (isMounted.current && Boolean(connected)) {
                 onClose();
             }
+        } catch {
+            return;
         } finally {
             if (isMounted.current) {
                 connectPending.current = false;
@@ -91,7 +93,7 @@ export function WalletSelectionModal({ onClose }: WalletSelectionModalProps) {
 
                 {/* Albedo support is not yet implemented */}
                 <button
-                    className="wallet-option"
+                    className="wallet-option wallet-option-disabled"
                     disabled
                     aria-disabled="true"
                     title="Albedo support is coming soon"
@@ -102,7 +104,7 @@ export function WalletSelectionModal({ onClose }: WalletSelectionModalProps) {
                         </div>
                         <span className="wallet-name">Albedo</span>
                     </div>
-                    <span className="wallet-coming-soon">Coming soon</span>
+                    <span className="wallet-status wallet-coming-soon">Coming soon</span>
                 </button>
             </div>
 
